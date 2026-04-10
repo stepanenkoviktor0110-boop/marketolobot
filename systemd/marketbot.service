@@ -1,0 +1,16 @@
+[Unit]
+Description=MarketBot PMF Pipeline Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=xander_bot
+WorkingDirectory=/home/xander_bot/botz/МаркетБот
+ExecStart=/home/xander_bot/botz/МаркетБот/.venv/bin/python entrypoints/telegram_bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

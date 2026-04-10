@@ -1,0 +1,50 @@
+owner_id: 123456789  # Telegram user ID — подставь свой (узнать у @userinfobot)
+
+bot:
+    token: "YOUR_BOT_TOKEN"  # Токен от @BotFather
+
+projects_root: ./projects
+
+llm:
+    openrouter:
+        base_url: https://openrouter.ai/api/v1
+        api_key: "sk-or-v1-..."  # Ключ с openrouter.ai/keys
+        timeout: 120
+        draft_model: qwen/qwen-2.5-72b-instruct
+        polish_model: deepseek/deepseek-chat-v3-0324
+
+# Роутинг: 11 этапов PMF, каждый через draft → polish
+routing:
+    0_setup:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    1_hypothesis:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    2_research:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    3_synthesis:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    4_validation:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    5_interview_prep:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    6_field:
+        draft: null
+        polish: null
+    7_interview_synthesis:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    8_mvp_launch:
+        draft: null
+        polish: null
+    9_metrics:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324
+    10_iterate:
+        draft: qwen/qwen-2.5-72b-instruct
+        polish: deepseek/deepseek-chat-v3-0324

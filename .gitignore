@@ -35,3 +35,13 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Secrets — use config.example.yaml instead
+config.yaml
+
+# Runtime data
+projects/
+*.meta.json
+
+# Whisper cache
+.cache/
