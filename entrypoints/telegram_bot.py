@@ -281,6 +281,7 @@ def detect_intent(text: str) -> tuple[str, str] | None:
 
 # Pending intent storage: callback_id → {text, project_path, username, mode, label, created_at}
 _pending_intents: dict[str, dict] = {}
+_voice_transcripts: dict[str, dict] = {}
 _PENDING_INTENT_TTL = 300  # 5 minutes
 
 
@@ -1209,33 +1210,18 @@ async def _handle_voice_inner(message: Message):
         await message.reply("Не удалось разобрать речь.")
         return
 
-    # Show transcript first
-    await message.reply(f"🗣 Распознано: {text}")
-
-    # Post-process: summarize + extract actions
-    await message.reply("🧠 Анализирую голосовое...")
-    try:
-        from core.router import summarize_voice_message
-        project_name = None
-        if message.chat.type in ("group", "supergroup"):
-            project_name = storage.get_linked_project(PROJECTS_ROOT, message.chat.id)
-        else:
-            guest_project = _get_guest_project(message.from_user.id)
-            if guest_project:
-                project_name = guest_project
-            else:
-                ustate = get_ustate(message.from_user.id)
-                project_name = ustate.get("active_project")
-
-        if project_name:
-            project_path = storage.get_project_path(PROJECTS_ROOT, project_name)
-            summary = await summarize_voice_message(text, project_path)
-            await message.reply(f"📋 Анализ голосового для проекта «{project_name}»:\n\n{summary}")
-        else:
-            await message.reply("💡 Выбери проект, чтобы я мог проанализировать голосовое в контексте.")
-    except Exception as exc:
-        logger.error("Voice post-processing failed: %s", _sanitize_error_message(exc))
-        await message.reply("Не удалось проанализировать голосовое. Попробуй ещё раз.")
+    # Show transcript with inline button to summarize
+    cid = str(uuid.uuid4())[:8]
+    summary_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📝 Сделать резюме", callback_data=f"voice_summary:{cid}"),
+    ]])
+    # Store transcript data for callback handler
+    _voice_transcripts[cid] = {
+        "text": text,
+        "user_id": message.from_user.id,
+        "chat_id": message.chat.id,
+    }
+    await message.reply(f"🗣 Распознано: {text}", reply_markup=summary_kb)
 
     # Also save to group context if in group
     if message.chat.type in ("group", "supergroup"):
@@ -1369,6 +1355,55 @@ async def _handle_intent_callback_inner(callback: CallbackQuery):
     elif action == "chat":
         await callback.answer()
         await callback.message.answer("Хорошо, напиши что именно тебе нужно 👇")
+
+
+# ---------------------------------------------------------------------------
+# Voice summary callback handler
+# ---------------------------------------------------------------------------
+
+
+@router_tg.callback_query(F.data.startswith("voice_summary:"))
+async def handle_voice_summary_callback(callback: CallbackQuery):
+    async with get_semaphore(callback.from_user.id):
+        await _handle_voice_summary_callback_inner(callback)
+
+
+async def _handle_voice_summary_callback_inner(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    cid = parts[1]
+    data = _voice_transcripts.pop(cid, None)
+
+    if not data:
+        await callback.answer("Запрос устарел, отправь голосовое заново.", show_alert=True)
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer()
+
+    # Resolve project
+    project_name = None
+    if data["chat_id"] < 0:  # group chat
+        project_name = storage.get_linked_project(PROJECTS_ROOT, data["chat_id"])
+    else:
+        guest_project = _get_guest_project(data["user_id"])
+        if guest_project:
+            project_name = guest_project
+        else:
+            ustate = get_ustate(data["user_id"])
+            project_name = ustate.get("active_project")
+
+    await callback.message.reply("🧠 Анализирую голосовое...")
+    try:
+        from core.router import summarize_voice_message
+        if project_name:
+            project_path = storage.get_project_path(PROJECTS_ROOT, project_name)
+            summary = await summarize_voice_message(data["text"], project_path)
+            await callback.message.reply(f"📋 Анализ голосового для проекта «{project_name}»:\n\n{summary}")
+        else:
+            await callback.message.reply("💡 Выбери проект, чтобы я мог проанализировать голосовое в контексте.")
+    except Exception as exc:
+        logger.error("Voice summarization failed: %s", _sanitize_error_message(exc))
+        await callback.message.reply("Не удалось проанализировать голосовое. Попробуй ещё раз.")
 
 
 # ---------------------------------------------------------------------------

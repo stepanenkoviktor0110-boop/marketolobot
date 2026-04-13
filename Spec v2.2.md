@@ -244,7 +244,7 @@ async def cmd_balance(msg: types.Message):
     alert = await check_balance()
     await msg.reply(alert or f"💰 Баланс OpenRouter: в норме")
 
-# 5. Голосовые
+# 5. Голосовые — транскрибация + кнопка "Сделать резюме"
 @dp.message(F.voice)
 async def handle_voice(msg: types.Message):
     if not is_allowed(msg): return
@@ -252,7 +252,19 @@ async def handle_voice(msg: types.Message):
     path = await bot.download_file(file.file_path)
     text = await transcribe_voice(str(path), msg)
     append_to_group_context(project, f"[Голосовое от {msg.from_user.full_name}]: {text}")
-    await msg.reply(f"🎙️ Транскрипт: {text[:200]}...")
+    # Показываем расшифровку с inline-кнопкой
+    cid = uuid4().hex[:8]
+    _voice_transcripts[cid] = {"text": text, "user_id": msg.from_user.id, "chat_id": msg.chat.id}
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📝 Сделать резюме", callback_data=f"voice_summary:{cid}")
+    ]])
+    await msg.reply(f"🗣 Распознано: {text}", reply_markup=kb)
+
+# 6. Callback кнопки голосового резюме
+@dp.callback_query(F.data.startswith("voice_summary:"))
+async def handle_voice_summary(callback: CallbackQuery):
+    # Извлекаем транскрипт, резолвим проект, вызываем summarize_voice_message()
+    # Кнопка удаляется после нажатия
 ```
 
 ### 5.2. Логирование
@@ -323,6 +335,7 @@ WantedBy=multi-user.target
 | **Пути** | Относительные (`pathlib`), никаких хардкодов `/root/...` |
 | **Баланс** | Автопроверка OpenRouter `/credits`, алерт в ЛС при `<$1` |
 | **Голосовые** | `faster-whisper small`, thread pool, глобальный семафор (1 поток), очередь с уведомлением |
+| **Voice summary** | После транскрибации — inline-кнопка "📝 Сделать резюме". Суммаризация только по нажатию, callback `voice_summary:{cid}` |
 | **Контекст групп** | Rolling 300 строк в `group_context.md`, автосохранение всех сообщений |
 | **Concurrency** | Per-user semaphore (`asyncio.Semaphore(1)`), предотвращает race conditions |
 | **Логи** | `journald` (stdout/stderr) + rotating file `logs/bot.log` |
