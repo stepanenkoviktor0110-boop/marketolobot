@@ -22,10 +22,10 @@ def _get_model():
     return _model
 
 
-def _transcribe_sync(ogg_bytes: bytes) -> str:
-    """Blocking transcription — runs in thread pool."""
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-        tmp.write(ogg_bytes)
+def _transcribe_sync(audio_bytes: bytes, suffix: str = ".ogg") -> str:
+    """Blocking transcription — runs in thread pool. Accepts any ffmpeg-compatible format."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(audio_bytes)
         tmp_path = tmp.name
     try:
         model = _get_model()
@@ -40,3 +40,10 @@ async def transcribe_ogg(ogg_bytes: bytes) -> str:
     loop = asyncio.get_event_loop()
     async with _transcribe_sem:
         return await loop.run_in_executor(None, _transcribe_sync, ogg_bytes)
+
+
+async def transcribe_audio(audio_bytes: bytes, suffix: str = ".webm") -> str:
+    """Transcribe any ffmpeg-supported audio format. Non-blocking, globally serialized."""
+    loop = asyncio.get_event_loop()
+    async with _transcribe_sem:
+        return await loop.run_in_executor(None, _transcribe_sync, audio_bytes, suffix)

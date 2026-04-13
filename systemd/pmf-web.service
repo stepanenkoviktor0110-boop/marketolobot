@@ -1,0 +1,18 @@
+[Unit]
+Description=PMF Pipeline Web UI
+After=network.target marketbot.service
+
+[Service]
+Type=simple
+User=xander_bot
+Group=xander_bot
+WorkingDirectory=/home/xander_bot/botz/МаркетБот
+ExecStart=/home/xander_bot/botz/МаркетБот/.venv/bin/uvicorn entrypoints.web_ui:app --host 127.0.0.1 --port 8080 --workers 2
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target

@@ -7,7 +7,6 @@ Strategy:
 - Total target: ~2000 chars
 """
 
-import os
 import json
 import logging
 from pathlib import Path
@@ -39,14 +38,14 @@ def _sources_mtime(project_path: str) -> float:
 def _load_summary_meta(project_path: str) -> dict:
     meta_path = Path(project_path) / SUMMARY_META_FILE
     if meta_path.exists():
-        with open(meta_path) as f:
+        with open(meta_path, encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def _save_summary_meta(project_path: str, mtime: float):
     meta_path = Path(project_path) / SUMMARY_META_FILE
-    with open(meta_path, "w") as f:
+    with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({"source_mtime": mtime}, f)
 
 

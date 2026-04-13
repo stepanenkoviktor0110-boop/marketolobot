@@ -12,6 +12,7 @@ llm:
         timeout: 120
         draft_model: qwen/qwen-2.5-72b-instruct
         polish_model: deepseek/deepseek-chat-v3-0324
+        balance_threshold_usd: 5.0  # Уведомлять когда баланс ниже $5
 
 # Роутинг: 11 этапов PMF, каждый через draft → polish
 routing:
@@ -48,3 +49,28 @@ routing:
     10_iterate:
         draft: qwen/qwen-2.5-72b-instruct
         polish: deepseek/deepseek-chat-v3-0324
+web_api_token: "change-me-before-use"
+
+# Telegram bot settings
+telegram:
+    max_response_chars: 2900  # Максимум символов в одном сообщении
+
+# Групповые чаты
+group:
+    allowed_in_groups: true  # Разрешить бота в группах
+    trigger_mode: "mention_or_reply"  # mention | keyword | always
+    keywords: ["бот", "пмф", "pmf", "гипотеза"]  # Ключевые слова для активации (если trigger_mode=keyword)
+
+# Web UI настройки
+webui:
+    owner_token: "change-owner-token"  # Токен для владельца (POST запросы)
+    shared_token: "change-shared-token"  # Токен для чтения (GET запросы)
+    features:
+        enable_rag: true  # Включить RAG-поиск
+        enable_voice: true  # Включить транскрипцию голоса
+        enable_chat: true  # Включить AI-чат с проектом
+
+# Notion интеграция (опционально, пока не используется)
+notion:
+    api_key: ""  # "ntn_..."
+    database_id: ""  # ID базы для экспорта артефактов

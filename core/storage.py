@@ -4,58 +4,12 @@ import json
 import os
 from datetime import datetime
 
-# Max messages kept in group_context.md (rolling window)
-GROUP_CONTEXT_MAX_LINES = 300
-
-
-def load_group_links(projects_root: str) -> dict:
-    """Return {chat_id: project_name} mapping."""
-    path = os.path.join(projects_root, "group_links.json")
-    if os.path.exists(path):
-        with open(path) as f:
-            return json.load(f)
-    return {}
-
-
-def save_group_links(projects_root: str, links: dict):
-    path = os.path.join(projects_root, "group_links.json")
-    os.makedirs(projects_root, exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(links, f, indent=2, ensure_ascii=False)
-
-
-def link_group(projects_root: str, chat_id: int, project_name: str):
-    links = load_group_links(projects_root)
-    links[str(chat_id)] = project_name
-    save_group_links(projects_root, links)
-
-
-def get_linked_project(projects_root: str, chat_id: int) -> str | None:
-    links = load_group_links(projects_root)
-    return links.get(str(chat_id))
-
-
-def append_group_message(project_path: str, username: str, text: str):
-    """Append a group message to group_context.md with a rolling window."""
-    ctx_file = os.path.join(project_path, "group_context.md")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    line = f"[{timestamp}] {username}: {text}\n"
-
-    # Read existing lines
-    if os.path.exists(ctx_file):
-        with open(ctx_file, encoding="utf-8") as f:
-            lines = f.readlines()
-    else:
-        lines = []
-
-    lines.append(line)
-
-    # Keep rolling window
-    if len(lines) > GROUP_CONTEXT_MAX_LINES:
-        lines = lines[-GROUP_CONTEXT_MAX_LINES:]
-
-    with open(ctx_file, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+from core.group_utils import (
+    append_group_message,
+    get_linked_project,
+    get_user_display_name,
+    link_group,
+)
 
 # Stage detection: check files from latest to earliest
 STAGE_ARTIFACTS = [
@@ -111,6 +65,7 @@ def create_project(projects_root: str, project_name: str) -> str:
     os.makedirs(path, exist_ok=True)
     os.makedirs(os.path.join(path, "output"), exist_ok=True)
     os.makedirs(os.path.join(path, "interviews", "notes"), exist_ok=True)
+    os.makedirs(os.path.join(path, "inbox"), exist_ok=True)
     state = {
         "project_name": project_name,
         "created_at": datetime.now().isoformat(),
@@ -126,7 +81,7 @@ def create_project(projects_root: str, project_name: str) -> str:
 def load_state(project_path: str) -> dict:
     state_file = os.path.join(project_path, "state.json")
     if os.path.exists(state_file):
-        with open(state_file) as f:
+        with open(state_file, encoding="utf-8") as f:
             return json.load(f)
     return {
         "current_stage": "0_setup",
@@ -138,7 +93,7 @@ def load_state(project_path: str) -> dict:
 
 def save_state(project_path: str, state: dict):
     state["last_active"] = datetime.now().isoformat()
-    with open(os.path.join(project_path, "state.json"), "w") as f:
+    with open(os.path.join(project_path, "state.json"), "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
 
 
@@ -164,7 +119,7 @@ def get_context(project_path: str, max_chars_per_file: int = 2000) -> str:
     for fname in sorted(os.listdir(project_path)):
         fpath = os.path.join(project_path, fname)
         if fname.endswith((".md", ".json")) and fname != "state.json" and os.path.isfile(fpath):
-            with open(fpath) as fh:
+            with open(fpath, encoding="utf-8") as fh:
                 content = fh.read()[:max_chars_per_file]
             parts.append(f"## {fname}\n{content}")
     return "\n\n".join(parts)
@@ -173,7 +128,7 @@ def get_context(project_path: str, max_chars_per_file: int = 2000) -> str:
 def save_artifact(project_path: str, filename: str, content: str):
     filepath = os.path.join(project_path, filename)
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         f.write(content)
 
 
