@@ -4,13 +4,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from collections import deque
-import yaml, requests
+import yaml
 from fastapi import FastAPI, Form, BackgroundTasks, HTTPException, Depends, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # Core imports
 from core.task_storage import load_tasks, save_tasks, update_task, cleanup_tasks as cleanup_tasks_persist
+from core.llm_client import llm_call
 
 # === 1. CONFIG & PATHS ===
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -19,6 +20,10 @@ with open(BASE_DIR / "config.yaml", "r", encoding="utf-8") as f:
 
 PROJECTS_ROOT = (BASE_DIR / cfg.get("projects_root", "projects")).resolve()
 PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+
+LLM_CFG = cfg.get("llm", {}).get("claude", cfg.get("llm", {}).get("openrouter", {}))
+DRAFT_MODEL = LLM_CFG.get("draft_model", "haiku")
+POLISH_MODEL = LLM_CFG.get("polish_model", "sonnet")
 
 WEBUI_CFG = cfg.get("webui", {})
 FEATURES = WEBUI_CFG.get("features", {})
@@ -115,20 +120,17 @@ async def execute_context_process(job_id: str, project: str, mode: str):
 
     _task_update(job_id, progress=50, status_msg="Cleaning & Extracting...")
     prompt = f"Очисти лог от мусора. Оставь только ядро: гипотезы, инсайты, метрики, риски. Формат: Markdown.\nКонтекст:\n{raw}"
-    res = await run_with_retry(_call_llm, args=(cfg["llm"]["openrouter"]["draft_model"], prompt), max_retries=2)
+    res = await run_with_retry(_call_llm, args=(DRAFT_MODEL, prompt), kwargs={"call_site": "context_digest"}, max_retries=2)
 
     digest = p / "docs" / "context_digest.md"
     header = f"## 📅 {datetime.now().strftime('%Y-%m-%d %H:%M')} | Mode: {mode}\n\n"
     atomic_write(digest, header + res + "\n---\n" + (digest.read_text() if digest.exists() else ""))
     _task_update(job_id, status="completed", progress=100, status_msg="Context updated", file=f"/download/{project}/docs/context_digest.md")
 
-def _call_llm(model: str, prompt: str) -> str:
-    cfg_llm = cfg["llm"]["openrouter"]
-    r = requests.post(f"{cfg_llm['base_url']}/chat/completions",
-                      headers={"Authorization": f"Bearer {cfg_llm['api_key']}", "Content-Type": "application/json"},
-                      json={"model": model, "messages": [{"role": "user", "content": prompt}], "max_tokens": 1500, "temperature": 0.2}, timeout=60)
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
+async def _call_llm(model: str, prompt: str, *, call_site: str = "web_chat_full") -> str:
+    """Async wrapper around the shared LLM dispatcher so retry/queueing keeps working."""
+    content, *_ = await llm_call(call_site, prompt, model_override=model)
+    return content
 
 # === 4.5. RAG ENGINE ===
 try:
@@ -175,7 +177,7 @@ async def chat_with_project(project_path: Path, query: str) -> str:
         if len(ctx) > 12000: break
     if not ctx: return "📭 Контекст пуст. Добавь документы в папку проекта или запусти этап PMF."
     prompt = f"Ты ассистент проекта. Контекст:\n{ctx}\n\nВопрос: {query}\nОтвечай строго по контексту, до 300 слов. Цитируй источники (имя файла)."
-    return await run_with_retry(_call_llm, args=(cfg["llm"]["openrouter"]["draft_model"], prompt), max_retries=2)
+    return await run_with_retry(_call_llm, args=(DRAFT_MODEL, prompt), kwargs={"call_site": "web_chat_full"}, max_retries=2)
 
 # === 6. V4.0 UI: Dashboard ===
 @app.get("/", response_class=HTMLResponse)
@@ -973,31 +975,9 @@ async function loadBalance() {
   const mainEl = document.getElementById('balanceMain');
   const subEl = document.getElementById('balanceSub');
   if (!mainEl || !subEl) return;
-  mainEl.textContent = '💰 OpenRouter: ...';
-  subEl.textContent = 'Загрузка баланса';
+  mainEl.textContent = '🤖 Claude Code (подписка)';
+  subEl.textContent = 'Без оплаты по токенам';
   mainEl.classList.remove('low', 'danger');
-  try {
-    const r = await fetch('/api/balance', { headers: headers() });
-    const data = await r.json();
-    if (!data.ok) {
-      mainEl.textContent = '💰 OpenRouter: недоступно';
-      subEl.textContent = 'Не удалось получить баланс';
-      return;
-    }
-    const remaining = typeof data.remaining === 'number' ? data.remaining : null;
-    const usage = typeof data.usage === 'number' ? data.usage : 0;
-    const limit = typeof data.limit === 'number' ? data.limit : null;
-    const fmt = v => '$' + v.toFixed(4);
-    mainEl.textContent = 'OpenRouter: ' + (remaining === null ? 'лимит не задан' : (fmt(remaining) + ' остаток'));
-    if (remaining !== null && remaining < 1) mainEl.classList.add('danger');
-    else if (remaining !== null && remaining < 2) mainEl.classList.add('low');
-    subEl.textContent = limit === null
-      ? ('Использовано ' + fmt(usage))
-      : ('Использовано ' + fmt(usage) + ' из ' + fmt(limit));
-  } catch(e) {
-    mainEl.textContent = '💰 OpenRouter: ошибка';
-    subEl.textContent = 'Не удалось загрузить баланс';
-  }
 }
 
 async function loadTasks() {
@@ -1268,11 +1248,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="header-side">
       <div class="balance-widget">
         <div class="balance-top">
-          <div class="balance-main" id="balanceMain">OpenRouter: ...</div>
-          <button class="balance-refresh" onclick="loadBalance()" title="Обновить баланс">↻</button>
+          <div class="balance-main" id="balanceMain">🤖 Claude Code (подписка)</div>
         </div>
-        <div class="balance-sub" id="balanceSub">Загрузка баланса</div>
-        <div class="balance-sub" style="margin-top:4px;"><a href="https://openrouter.ai/credits" target="_blank" style="color:var(--gold);text-decoration:none;">Пополнить баланс →</a></div>
+        <div class="balance-sub" id="balanceSub">Без оплаты по токенам</div>
       </div>
       <div class="owner-badge">Личный ассистент</div>
       <span class="v-badge">v4.0</span>
@@ -1480,7 +1458,7 @@ async def api_chat(
 1. Отвечай ТОЛЬКО на основе предоставленного контекста.
 2. Если в контексте нет ответа — скажи "В базе знаний нет информации по этому вопросу."
 3. Максимум 300 слов. Структурированный ответ."""
-            response = await run_with_retry(_call_llm, args=(cfg["llm"]["openrouter"]["draft_model"], prompt), max_retries=2)
+            response = await run_with_retry(_call_llm, args=(DRAFT_MODEL, prompt), kwargs={"call_site": "web_chat_rag"}, max_retries=2)
             return {
                 "response": response,
                 "sources": [{"content": r["content"][:200], "type": r["metadata"].get("type"), "score": round(r["score"], 2)} for r in results],
@@ -1565,7 +1543,7 @@ async def api_balance():
     from core.balance_monitor import check_balance
     result = await check_balance()
     if result is None:
-        return {"ok": False}
+        return {"ok": True, "mode": "subscription", "provider": "claude-code"}
     return {"ok": True, **result}
 
 @app.get("/api/guests", dependencies=[Depends(require_owner)])
@@ -1797,11 +1775,6 @@ async def download(project: str, path: str):
 
 @app.get("/balance")
 async def balance():
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{cfg['llm']['openrouter']['base_url']}/credits", headers={"Authorization": f"Bearer {cfg['llm']['openrouter']['api_key']}"})
-            return {"usd": r.json().get("total_credits", 0)}
-    except: return {"error": "Check API key"}
+    return {"mode": "subscription", "provider": "claude-code"}
 
 # Запуск: uvicorn entrypoints.web_ui:app --host 0.0.0.0 --port 8000

@@ -1,7 +1,6 @@
 """
 router.py — Async draft→polish LLM router for the PMF pipeline bot.
 
-All LLM calls go through the OpenRouter API (single endpoint, single token).
 Pipeline per stage:
   1. Build context from project files.
   2. Call a fast "draft" model → JSON.
@@ -13,10 +12,10 @@ import json
 import logging
 import asyncio
 import random
+import re
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import yaml
 
 from core.context_builder import (
@@ -33,6 +32,7 @@ from core.prompts import (
     get_artifact_name,
     get_extra_artifact_name,
 )
+from core.llm_client import llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +51,79 @@ def _load_config() -> dict:
 
 CONFIG: dict = _load_config()
 
-_LLM_CFG: dict = CONFIG["llm"]["openrouter"]
-_BASE_URL: str = _LLM_CFG["base_url"].rstrip("/")
-_API_KEY: str = _LLM_CFG["api_key"]
-_TIMEOUT: int = int(_LLM_CFG.get("timeout", 120))
+_LLM_CFG: dict = CONFIG.get("llm", {}).get("claude", CONFIG.get("llm", {}).get("openrouter", {}))
 
 
-def _sanitize_api_error(text: str) -> str:
-    sanitized = text.replace(_API_KEY, "***") if _API_KEY else text
-    return sanitized[:500]
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n?|\n?```\s*$", re.IGNORECASE)
 
 
-def _log_spend(project_path: str, model: str, prompt_tokens: int, completion_tokens: int, mode: str = ""):
+def _raise_not_object(text: str, pos: int = 0) -> None:
+    raise json.JSONDecodeError("Expected a JSON object", text, pos)
+
+
+def _parse_json_object(candidate: str, source_text: str, pos: int = 0) -> dict:
+    parsed = json.loads(candidate)
+    if not isinstance(parsed, dict):
+        _raise_not_object(source_text, pos)
+    return parsed
+
+
+def _find_balanced_json_object(text: str) -> Optional[tuple[str, int]]:
+    """Return the first balanced ``{...}`` block, ignoring braces inside strings."""
+    for start, char in enumerate(text):
+        if char != "{":
+            continue
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for idx in range(start, len(text)):
+            current = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:idx + 1], start
+
+    return None
+
+
+def _extract_json(text: str) -> dict:
+    """Parse model output as JSON, tolerating markdown fences and surrounding prose."""
+    cleaned = _FENCE_RE.sub("", text.strip())
+    try:
+        return _parse_json_object(cleaned, cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    balanced = _find_balanced_json_object(cleaned)
+    if balanced is None:
+        raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+
+    candidate, pos = balanced
+    return _parse_json_object(candidate, cleaned, pos)
+
+
+def _log_spend(
+    project_path: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    mode: str = "",
+    backend: str | None = None,
+):
     """Append a spend record to projects/{project}/spend.json."""
     from datetime import datetime
     spend_file = Path(project_path) / "spend.json"
@@ -74,6 +135,8 @@ def _log_spend(project_path: str, model: str, prompt_tokens: int, completion_tok
         "total_tokens": prompt_tokens + completion_tokens,
         "mode": mode,
     }
+    if backend:
+        record["backend"] = backend
     try:
         existing = json.loads(spend_file.read_text(encoding="utf-8")) if spend_file.exists() else []
         existing.append(record)
@@ -87,96 +150,17 @@ def _log_spend(project_path: str, model: str, prompt_tokens: int, completion_tok
 
 
 async def get_balance() -> dict:
-    """Return OpenRouter credit balance info."""
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{_BASE_URL}/auth/key",
-                headers={"Authorization": f"Bearer {_API_KEY}"},
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPError as exc:
-        logger.warning("OpenRouter balance request failed: %s", exc.__class__.__name__)
-        raise RuntimeError("OpenRouter balance request failed") from exc
-
-
-# ---------------------------------------------------------------------------
-# Low-level API helper
-# ---------------------------------------------------------------------------
+    """Subscription mode — no per-USD balance to report."""
+    return {"mode": "subscription", "provider": "claude-code"}
 
 
 async def _api_call(
     model: str,
     prompt: str,
     system_prompt: Optional[str] = None,
+    call_site: str = "stage_draft",
 ) -> tuple[str, int, int, int]:
-    """POST a single chat completion request to OpenRouter.
-
-    Parameters
-    ----------
-    model:
-        OpenRouter model identifier, e.g. ``deepseek/deepseek-chat-v3-0324``.
-    prompt:
-        The user-role message content.
-    system_prompt:
-        Optional system-role message content.
-
-    Returns
-    -------
-    tuple[str, int, int, int]
-        ``(content, prompt_tokens, completion_tokens, total_tokens)`` where
-        *content* is the raw text returned by the model and the token counts
-        come from the response usage field (0 if unavailable).
-
-    Raises
-    ------
-    httpx.TimeoutException
-        Re-raised with a descriptive message when the request times out.
-    RuntimeError
-        When the API returns a 4xx or 5xx status.
-    """
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.5,
-        "max_tokens": 4000,
-    }
-
-    headers = {
-        "Authorization": f"Bearer {_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/pmf-pipeline-bot",
-    }
-
-    url = f"{_BASE_URL}/chat/completions"
-
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            response = await client.post(url, json=payload, headers=headers)
-    except httpx.TimeoutException as exc:
-        raise httpx.TimeoutException(
-            f"OpenRouter request timed out after {_TIMEOUT}s for model '{model}'."
-        ) from exc
-
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"OpenRouter API error {response.status_code} for model '{model}': "
-            f"{_sanitize_api_error(response.text)}"
-        )
-
-    data = response.json()
-    content: str = data["choices"][0]["message"]["content"]
-    usage = data.get("usage", {})
-    prompt_tokens: int = usage.get("prompt_tokens", 0)
-    completion_tokens: int = usage.get("completion_tokens", 0)
-    total_tokens: int = usage.get("total_tokens", prompt_tokens + completion_tokens)
-    return content, prompt_tokens, completion_tokens, total_tokens
+    return (await llm_call(call_site, prompt, system_prompt, model_override=model))[:4]
 
 
 # ---------------------------------------------------------------------------
@@ -222,24 +206,34 @@ async def run_stage(stage: str, user_input: str, project_path: str) -> str:
     # 2. Draft call → JSON
     # ------------------------------------------------------------------
     draft_prompt = get_draft_prompt(stage, context, user_input)
+    draft_system = (
+        "Reply with a single valid JSON object that strictly matches the schema "
+        "shown in the user prompt. Do not ask clarifying questions. Do not wrap "
+        "the JSON in markdown fences. If a field is unknown, fill it with your "
+        "best inference and a low confidence value. Output JSON and nothing else."
+    )
     logger.info("[%s] Calling draft model: %s", stage, draft_model)
 
-    raw_draft, draft_p, draft_c, draft_tokens = await _api_call(draft_model, draft_prompt)
-    _log_spend(str(project_path), draft_model, draft_p, draft_c, mode=f"{stage}/draft")
+    raw_draft, draft_p, draft_c, draft_tokens, draft_actual_model, draft_backend = await llm_call(
+        "stage_draft", draft_prompt, system_prompt=draft_system, model_override=draft_model
+    )
+    _log_spend(str(project_path), draft_actual_model, draft_p, draft_c, mode=f"{stage}/draft", backend=draft_backend)
     logger.info("[%s] Draft tokens used: %d", stage, draft_tokens)
 
     # Parse JSON; retry once on failure
     draft_json: dict
     try:
-        draft_json = json.loads(raw_draft)
+        draft_json = _extract_json(raw_draft)
     except json.JSONDecodeError:
         logger.warning(
             "[%s] Draft response was not valid JSON — retrying once.", stage
         )
-        raw_draft, draft_p, draft_c, draft_tokens = await _api_call(draft_model, draft_prompt)
-        _log_spend(str(project_path), draft_model, draft_p, draft_c, mode=f"{stage}/draft")
+        raw_draft, draft_p, draft_c, draft_tokens, draft_actual_model, draft_backend = await llm_call(
+            "stage_draft", draft_prompt, system_prompt=draft_system, model_override=draft_model
+        )
+        _log_spend(str(project_path), draft_actual_model, draft_p, draft_c, mode=f"{stage}/draft", backend=draft_backend)
         try:
-            draft_json = json.loads(raw_draft)
+            draft_json = _extract_json(raw_draft)
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"Draft model '{draft_model}' returned invalid JSON after retry.\n"
@@ -263,10 +257,18 @@ async def run_stage(stage: str, user_input: str, project_path: str) -> str:
     # 4. Polish call → Markdown
     # ------------------------------------------------------------------
     polish_prompt = get_polish_prompt(stage, draft_json)
+    polish_system = (
+        "Return polished Markdown content as your reply. Do not attempt to "
+        "create files, run tools, or apologize about permissions — the caller "
+        "saves your text to disk. Do not wrap the output in code fences. "
+        "Reply with the Markdown body only."
+    )
     logger.info("[%s] Calling polish model: %s", stage, polish_model)
 
-    polished_md, polish_p, polish_c, polish_tokens = await _api_call(polish_model, polish_prompt)
-    _log_spend(str(project_path), polish_model, polish_p, polish_c, mode=f"{stage}/polish")
+    polished_md, polish_p, polish_c, polish_tokens, polish_actual_model, polish_backend = await llm_call(
+        "stage_polish", polish_prompt, system_prompt=polish_system, model_override=polish_model
+    )
+    _log_spend(str(project_path), polish_actual_model, polish_p, polish_c, mode=f"{stage}/polish", backend=polish_backend)
     logger.info("[%s] Polish tokens used: %d", stage, polish_tokens)
 
     # ------------------------------------------------------------------
@@ -305,8 +307,10 @@ async def ensure_summary(project_path: str):
         "Сохрани суть: продукт, целевая аудитория, ключевые идеи, текущий статус.\n\n"
         f"{source_text}"
     )
-    summary_text, sum_p, sum_c, _ = await _api_call(_POLISH_MODEL, prompt)
-    _log_spend(project_path, _POLISH_MODEL, sum_p, sum_c, mode="summary")
+    summary_text, sum_p, sum_c, _, summary_model, summary_backend = await llm_call(
+        "summary", prompt, model_override=_POLISH_MODEL
+    )
+    _log_spend(project_path, summary_model, sum_p, sum_c, mode="summary", backend=summary_backend)
     await asyncio.to_thread(save_summary, project_path, summary_text.strip())
     logger.info("Summary regenerated for project: %s", project_path)
 
@@ -360,8 +364,11 @@ async def telegram_reply(user_text: str, project_path: str, mode: str = "chat", 
         f"\n\nТекущее сообщение (отвечай именно на него): {user_text}"
     )
 
-    response, resp_p, resp_c, tokens = await _api_call(_DRAFT_MODEL, user_text, system_prompt=system)
-    _log_spend(project_path, _DRAFT_MODEL, resp_p, resp_c, mode=mode)
+    call_site = "telegram_chat" if mode == "chat" else "telegram_artifact"
+    response, resp_p, resp_c, tokens, actual_model, backend = await llm_call(
+        call_site, user_text, system_prompt=system, model_override=_DRAFT_MODEL
+    )
+    _log_spend(project_path, actual_model, resp_p, resp_c, mode=mode, backend=backend)
     logger.info("telegram_reply mode=%s tokens=%d project=%s", mode, tokens, project_path)
 
     # Persist non-chat responses as timestamped artifact files (atomic, no race)
@@ -411,6 +418,8 @@ async def summarize_voice_message(transcript: str, project_path: str) -> str:
         "Проанализируй в контексте проекта и выдай результат по структуре выше."
     )
 
-    response, resp_p, resp_c, tokens = await _api_call(_DRAFT_MODEL, user_prompt, system_prompt=system)
-    _log_spend(project_path, _DRAFT_MODEL, resp_p, resp_c, mode="voice_summary")
+    response, resp_p, resp_c, tokens, actual_model, backend = await llm_call(
+        "voice_summary", user_prompt, system_prompt=system, model_override=_DRAFT_MODEL
+    )
+    _log_spend(project_path, actual_model, resp_p, resp_c, mode="voice_summary", backend=backend)
     return response
