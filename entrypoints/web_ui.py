@@ -44,6 +44,29 @@ logger = logging.getLogger("pmf-web")
 # === 2. APP ===
 app = FastAPI(title="PMF Pipeline v4.0")
 
+# Favicon — gold arc ring on dark square, echoes the PMF Score hero widget.
+# Single SVG served from both /favicon.svg and /favicon.ico (modern browsers
+# accept SVG at .ico). Kept inline to avoid adding a static/ directory.
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="5" fill="#07090c"/>'
+    '<circle cx="16" cy="16" r="10" fill="none" stroke="rgba(200,164,92,0.18)" stroke-width="3"/>'
+    '<circle cx="16" cy="16" r="10" fill="none" stroke="#c8a45c" stroke-width="3" '
+    'stroke-linecap="round" stroke-dasharray="44 100" transform="rotate(-90 16 16)"/>'
+    '</svg>'
+)
+FAVICON_LINK = '<link rel="icon" type="image/svg+xml" href="/favicon.svg">'
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(
+        content=FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
 # === 3. AUTH & ACCESS ===
 # auto_error=False lets us fall back to the cookie when no Bearer header is present.
 security = HTTPBearer(auto_error=False)
@@ -1814,6 +1837,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PMF Pipeline</title>
+{FAVICON_LINK}
 <style>{css}</style>
 </head>
 <body>
@@ -2036,6 +2060,7 @@ LOGIN_PAGE_TEMPLATE = """<!doctype html>
 <meta charset="utf-8">
 <title>PMF Pipeline — вход</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+{favicon}
 <style>
 :root {{
   --bg:#07090c; --surface:#0d1117; --border:rgba(255,255,255,0.09);
@@ -2116,7 +2141,7 @@ def _render_login(error: Optional[str] = None) -> str:
     err_html = (
         f'<div class="err">{html_escape(error)}</div>' if error else ""
     )
-    return LOGIN_PAGE_TEMPLATE.format(error_block=err_html)
+    return LOGIN_PAGE_TEMPLATE.format(error_block=err_html, favicon=FAVICON_LINK)
 
 
 @app.get("/login", response_class=HTMLResponse)
@@ -2633,6 +2658,7 @@ async def view_file(project: str, path: str):
 <html lang="ru"><head>
 <meta charset="utf-8">
 <title>{title}</title>
+{FAVICON_LINK}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&family=DM+Sans:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
