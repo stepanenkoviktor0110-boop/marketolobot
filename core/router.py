@@ -13,6 +13,7 @@ import logging
 import asyncio
 import random
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -27,6 +28,7 @@ from core.context_builder import (
 
 from core.storage import get_context, save_artifact
 from core.prompts import (
+    STAGES,
     get_draft_prompt,
     get_polish_prompt,
     get_artifact_name,
@@ -195,6 +197,39 @@ async def run_stage(stage: str, user_input: str, project_path: str) -> str:
     polish_model: str = routing[stage]["polish"]
 
     project_path = Path(project_path)
+
+    # ------------------------------------------------------------------
+    # 0. Handle manual ("вне бота") stages — no LLM call, stub artifact.
+    # ------------------------------------------------------------------
+    raw_draft_tpl = (STAGES.get(stage, {}).get("draft_prompt", "") or "").strip()
+    raw_polish_tpl = (STAGES.get(stage, {}).get("polish_prompt", "") or "").strip()
+    draft_empty = not raw_draft_tpl
+    polish_empty = not raw_polish_tpl
+    if draft_empty != polish_empty:
+        # Fail loud: a half-empty pair is almost certainly a prompts.py edit
+        # mistake, not an intentional manual stage.
+        raise ValueError(
+            f"Stage '{stage}' has one of draft_prompt/polish_prompt empty "
+            f"but not the other (draft_empty={draft_empty}, polish_empty={polish_empty}). "
+            f"Either set both to '' for a manual stage or fill both."
+        )
+    if draft_empty and polish_empty:
+        stage_name = STAGES.get(stage, {}).get("name", stage)
+        logger.info("[%s] Manual stage — skipping LLM, writing stub artifact", stage)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+        md = (
+            f"# {stage_name}\n\n"
+            f"> Этот этап выполняется **вне бота**. Бот не генерирует артефакт автоматически.\n\n"
+            f"## Что делать\n\n"
+            f"- Проведи действие в реальности (запуск, интервью, сбор данных).\n"
+            f"- Результаты загрузи в проект вручную либо через голосовые заметки / контекст группы.\n"
+            f"- Обработай контекст через кнопку «Обработать и индексировать» — далее переходи к следующему этапу.\n\n"
+            f"_Сформировано автоматически {ts}._\n"
+        )
+        await asyncio.to_thread(
+            save_artifact, str(project_path), f"{stage}_final.md", md
+        )
+        return md
 
     # ------------------------------------------------------------------
     # 1. Build context

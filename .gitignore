@@ -38,6 +38,7 @@ logs/
 
 # Secrets — use config.example.yaml instead
 config.yaml
+.new_token.txt
 
 # Runtime data
 projects/
