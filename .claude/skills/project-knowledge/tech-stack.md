@@ -6,17 +6,21 @@
 ## Зависимости
 - aiogram 3.x — Telegram Bot API (frozen Pydantic models — нельзя мутировать поля Message)
 - FastAPI + uvicorn — Web UI (workers=2, host=127.0.0.1:8080)
-- httpx — async HTTP для LLM API (заменяет requests в router.py)
 - pyyaml — конфигурация
 - faster-whisper 1.2.1 — локальная транскрибация (model=small, device=cpu, compute_type=int8)
 - chromadb — векторная БД для RAG (`chroma_db/` в корне проекта)
 - python-multipart — загрузка файлов в FastAPI
 
-## LLM провайдеры
-- **OpenRouter** — все LLM-вызовы через единый endpoint
-  - Draft (быстрый): `qwen/qwen-2.5-72b-instruct`
-  - Polish (качество): `deepseek/deepseek-chat-v3-0324`
-  - Telegram lite: draft model для chat/hypothesize/brainstorm/rate
+## LLM движок
+- **Claude Code CLI** — все LLM-вызовы через локальный `claude --print --output-format json` subprocess
+  - Аутентификация: подписка Pro/Max через OAuth (без API ключа)
+  - Бинарь: `~/.npm-global/bin/claude` (override через env `CLAUDE_BIN` или `llm.claude.bin` в config.yaml)
+  - Draft (быстрый): `haiku`
+  - Polish (качество): `sonnet`
+  - Subprocess запускается с `cwd=/tmp` чтобы избежать загрузки project CLAUDE.md
+  - Флаги: `--print --no-session-persistence --tools "" --disable-slash-commands --output-format json`
+  - Промпт передаётся через stdin (защита от flag confusion + ARG_MAX лимита)
+  - Реализация: `core/router.py:_api_call`
 - Транскрибация: faster-whisper локально (без API, без токенов)
 
 ## Инфраструктура
@@ -34,6 +38,6 @@
 - `bot.token` — Telegram Bot token
 - `owner_id` — Telegram user ID владельца
 - `projects_root` — путь к папке проектов (обычно `projects`)
-- `llm.openrouter` — api_key, base_url, draft_model, polish_model, timeout
-- `webui.owner_token` / `webui.shared_token` — токены доступа к Web UI
-- `routing` — модели draft/polish per PMF-этап
+- `llm.claude` — `bin`, `timeout`, `draft_model`, `polish_model` (для Claude Code CLI)
+- `webui.owner_token` / `webui.shared_token` — токены доступа к Web UI (см. deployment.md → Secret Rotation)
+- `routing` — модели draft/polish per PMF-этап (значения: `haiku`, `sonnet` или `null` для пропуска этапа)

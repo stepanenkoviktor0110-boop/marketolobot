@@ -27,7 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from core import prompts, storage
 from core.balance_monitor import start_periodic_check
 from core.logging_config import setup_logging
-from core.router import get_balance, telegram_reply
+from core.router import telegram_reply
 from core.transcriber import transcribe_ogg
 from core.processor import chunk_text, format_status, format_stage_intro
 
@@ -528,26 +528,9 @@ async def _do_new_project(message: Message, name: str):
 async def cmd_balance(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    try:
-        data = await get_balance()
-        d = data.get("data", {})
-        limit = d.get("limit")
-        limit_value = float(limit) if limit is not None else None
-        usage = float(d.get("usage", 0))
-        remaining = (limit_value - usage) if limit_value is not None else None
-
-        lines = ["💳 OpenRouter баланс\n"]
-        if limit_value is not None:
-            lines.append(f"Лимит: ${limit_value:.4f}")
-            lines.append(f"Использовано: ${usage:.4f}")
-            lines.append(f"Остаток: ${remaining:.4f}")
-        else:
-            lines.append(f"Использовано: ${usage:.4f}")
-            lines.append("Лимит: не установлен (pay-as-you-go)")
-        await message.reply("\n".join(lines))
-    except Exception as exc:
-        logger.error("cmd_balance failed: %s", _sanitize_error_message(exc))
-        await message.reply(_BOT_UNAVAILABLE_TEXT)
+    await message.reply(
+        "🤖 Движок: Claude Code (подписка)\nБаланс по токенам не считается."
+    )
 
 
 @router_tg.message(Command("share"))
@@ -1144,32 +1127,12 @@ async def cmd_rate(message: Message):
 
 
 # ---------------------------------------------------------------------------
-# Balance warning
+# Balance warning — disabled in subscription mode
 # ---------------------------------------------------------------------------
-
-_balance_warned = False
 
 
 async def _check_balance_warning():
-    global _balance_warned
-    try:
-        data = await get_balance()
-        d = data.get("data", {})
-        limit = d.get("limit")
-        limit_value = float(limit) if limit is not None else None
-        usage = float(d.get("usage", 0))
-        if limit_value is not None:
-            remaining = limit_value - usage
-            if remaining < 1.0 and not _balance_warned:
-                _balance_warned = True
-                await bot.send_message(
-                    OWNER_ID,
-                    f"⚠️ OpenRouter: остаток ${remaining:.4f} — меньше $1. Пополни баланс."
-                )
-            elif remaining >= 1.0:
-                _balance_warned = False
-    except Exception as exc:
-        logger.warning("Balance check failed: %s", _sanitize_error_message(exc))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1422,7 +1385,7 @@ async def _register_commands():
         BotCommand(command="new", description="Создать новый проект"),
         BotCommand(command="status", description="Статус текущего проекта"),
         BotCommand(command="export", description="Экспорт артефактов"),
-        BotCommand(command="balance", description="Баланс OpenRouter"),
+        BotCommand(command="balance", description="Движок LLM"),
         BotCommand(command="feedback", description="Оставить замечание по боту"),
     ]
     await bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
